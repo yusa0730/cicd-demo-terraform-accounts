@@ -1,5 +1,5 @@
 # AWSアカウントのセキュリティベースライン変更はインフラ管理Teamのreviewが必要
-/baseline/          @your-org/infra-approvers
-/modules/           @your-org/infra-approvers
-/.github/workflows/ @your-org/infra-approvers
-/.github/CODEOWNERS @your-org/infra-approvers
+/baseline/          @yusa0730
+/modules/           @yusa0730
+/.github/workflows/ @yusa0730
+/.github/CODEOWNERS @yusa0730
