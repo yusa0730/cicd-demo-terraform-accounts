@@ -1,0 +1,145 @@
+name: baseline-apply
+
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - develop
+      - stg
+      - prod
+
+concurrency:
+  group: baseline-apply-${{ github.base_ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  resolve-environment:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+    steps:
+      - name: Resolve target environment
+        id: resolve
+        run: |
+          case "${{ github.base_ref }}" in
+            develop) echo "environment=dev"  >> "$GITHUB_OUTPUT" ;;
+            stg)     echo "environment=stg"  >> "$GITHUB_OUTPUT" ;;
+            prod)    echo "environment=prod" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "Unsupported base branch: ${{ github.base_ref }}"; exit 1 ;;
+          esac
+
+  # dev / stg: リユーザブルワークフローで apply
+  apply-non-prod:
+    needs: resolve-environment
+    if: github.event.pull_request.merged == true && needs.resolve-environment.outputs.environment != 'prod'
+    uses: ./.github/workflows/_reusable-baseline-apply.yml
+    with:
+      environment: ${{ needs.resolve-environment.outputs.environment }}
+      working_directory: baseline/${{ needs.resolve-environment.outputs.environment }}
+      checkout_ref: ${{ github.event.pull_request.base.ref }}
+    secrets: inherit
+
+  # prod: plan → artifact 保存 → 承認ゲート → apply
+  prod-plan:
+    needs: resolve-environment
+    if: github.event.pull_request.merged == true && needs.resolve-environment.outputs.environment == 'prod'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ACCOUNTS_PLAN_ROLE_ARN_PROD }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-1' }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.3"
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: baseline/prod
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: baseline/prod
+        run: terraform plan -no-color -out=tfplan
+
+      - name: Show plan in Step Summary
+        working-directory: baseline/prod
+        run: |
+          echo "### Baseline Plan — prod" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          terraform show -no-color tfplan >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-baseline-prod-${{ github.run_id }}
+          path: baseline/prod/tfplan
+          retention-days: 1
+          if-no-files-found: error
+
+  prod-apply:
+    needs:
+      - resolve-environment
+      - prod-plan
+    if: github.event.pull_request.merged == true && needs.resolve-environment.outputs.environment == 'prod'
+    runs-on: ubuntu-latest
+    environment: prod
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ACCOUNTS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-1' }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.3"
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: baseline/prod
+        run: terraform init
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-baseline-prod-${{ github.run_id }}
+          path: baseline/prod
+
+      - name: Verify plan artifact exists
+        working-directory: baseline/prod
+        run: test -f tfplan
+
+      - name: Terraform Apply
+        working-directory: baseline/prod
+        run: terraform apply -auto-approve tfplan
+
+      - name: Show outputs
+        working-directory: baseline/prod
+        run: |
+          echo "### Baseline Outputs — prod" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          terraform output >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

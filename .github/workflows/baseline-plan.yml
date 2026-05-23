@@ -1,0 +1,55 @@
+name: baseline-plan
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - stg
+      - prod
+
+concurrency:
+  group: baseline-plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.3"
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+  resolve-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+    steps:
+      - name: Resolve target environment
+        id: resolve
+        run: |
+          case "${{ github.base_ref }}" in
+            develop) echo "environment=dev"  >> "$GITHUB_OUTPUT" ;;
+            stg)     echo "environment=stg"  >> "$GITHUB_OUTPUT" ;;
+            prod)    echo "environment=prod" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "Unsupported target branch: ${{ github.base_ref }}"; exit 1 ;;
+          esac
+
+  plan:
+    needs:
+      - fmt
+      - resolve-environment
+    uses: ./.github/workflows/_reusable-baseline-plan.yml
+    with:
+      environment: ${{ needs.resolve-environment.outputs.environment }}
+      working_directory: baseline/${{ needs.resolve-environment.outputs.environment }}
+    secrets: inherit
