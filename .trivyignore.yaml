@@ -1,0 +1,5 @@
+misconfigurations:
+  - id: AVD-AWS-0015
+    statement: "CloudTrail log file validation is managed via separate compliance tooling."
+  - id: AVD-AWS-0014
+    statement: "CloudTrail KMS encryption is out of scope for this demo baseline."

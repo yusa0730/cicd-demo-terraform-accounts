@@ -1,0 +1,14 @@
+compact: true
+directory:
+  - .
+framework:
+  - terraform
+skip-check:
+  # GuardDuty S3 Protection — demo環境ではオプション機能のため除外
+  - CKV2_AWS_3
+  # CloudTrail log validation — demo環境ではS3バケットポリシーの複雑化を避けるため除外
+  - CKV_AWS_36
+  # CloudTrail KMS暗号化 — demo環境ではCMK管理コストを避けるため除外
+  - CKV_AWS_35
+  # Config recorder — 全リージョン対象は対象外
+  - CKV2_AWS_45

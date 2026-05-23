@@ -17,6 +17,10 @@ permissions:
   id-token: write
   contents: read
   pull-requests: write
+  issues: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   plan:
@@ -25,7 +29,7 @@ jobs:
       ENVIRONMENT: ${{ inputs.environment }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
 
       - name: Select IAM role
         id: role
@@ -39,13 +43,13 @@ jobs:
           esac
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6.1.1
         with:
           role-to-assume: ${{ steps.role.outputs.arn }}
           aws-region: ${{ vars.AWS_REGION || 'ap-northeast-1' }}
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4.0.1
         with:
           terraform_version: "1.15.3"
           terraform_wrapper: false
@@ -56,7 +60,7 @@ jobs:
       - name: Install tfcmt
         run: |
           set -euxo pipefail
-          TFCMT_VERSION="v4.14.13"
+          TFCMT_VERSION="v4.14.15"
           curl --fail --location --show-error -o /tmp/tfcmt.tar.gz \
             "https://github.com/suzuki-shunsuke/tfcmt/releases/download/${TFCMT_VERSION}/tfcmt_linux_amd64.tar.gz"
           tar xzf /tmp/tfcmt.tar.gz tfcmt
@@ -73,48 +77,56 @@ jobs:
           sudo mv conftest /usr/local/bin/conftest
           conftest --version
 
-      - name: Run trivy
-        id: trivy
-        uses: aquasecurity/trivy-action@v0.36.0
-        continue-on-error: true
+      - name: Setup Trivy
+        uses: aquasecurity/setup-trivy@e07451d2e059ed86c2870430ea286b3a9e0bf241
         with:
-          scan-type: config
-          scan-ref: ${{ inputs.working_directory }}
-          exit-code: "1"
-          format: table
-          output: /tmp/trivy-output.txt
+          version: v0.70.0
+          cache: true
 
-      - name: Show trivy results in Step Summary
-        if: always()
+      - name: Run Trivy config scan
+        id: trivy
         run: |
-          if [ "${{ steps.trivy.outcome }}" = "success" ]; then
-            echo "### trivy — $ENVIRONMENT ✅" >> "$GITHUB_STEP_SUMMARY"
+          set +e
+          trivy config \
+            --ignorefile "$GITHUB_WORKSPACE/.trivyignore.yaml" \
+            --format table \
+            --exit-code 1 \
+            --output /tmp/trivy-output.txt \
+            ${{ inputs.working_directory }}
+          TRIVY_EXIT_CODE=$?
+
+          if [ "$TRIVY_EXIT_CODE" -eq 0 ]; then
+            echo "### Trivy — $ENVIRONMENT ✅" >> "$GITHUB_STEP_SUMMARY"
+            echo "問題は検出されませんでした。" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### trivy — $ENVIRONMENT ⚠️" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Trivy — $ENVIRONMENT ❌" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-            if [ -f /tmp/trivy-output.txt ]; then
-              cat /tmp/trivy-output.txt >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "trivy did not generate an output file." >> "$GITHUB_STEP_SUMMARY"
-            fi
+            cat /tmp/trivy-output.txt >> "$GITHUB_STEP_SUMMARY" || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
+          cat /tmp/trivy-output.txt || true
+          exit "$TRIVY_EXIT_CODE"
 
-      - name: Run checkov
+      - name: Run Checkov
         id: checkov
+        if: always()
         working-directory: ${{ inputs.working_directory }}
-        continue-on-error: true
-        run: checkov -d . --quiet --framework terraform 2>&1 | tee /tmp/checkov-output.txt
+        run: |
+          set -o pipefail
+          checkov -d . --quiet --framework terraform \
+            --config-file "$GITHUB_WORKSPACE/.checkov.yml" \
+            2>&1 | tee /tmp/checkov-output.txt
 
-      - name: Show checkov results in Step Summary
+      - name: Show Checkov results in Step Summary
         if: always()
         run: |
           if [ "${{ steps.checkov.outcome }}" = "success" ]; then
-            echo "### checkov — $ENVIRONMENT ✅" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Checkov — $ENVIRONMENT ✅" >> "$GITHUB_STEP_SUMMARY"
+            echo "問題は検出されませんでした。" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "### checkov — $ENVIRONMENT ⚠️" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Checkov — $ENVIRONMENT ❌" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-            cat /tmp/checkov-output.txt >> "$GITHUB_STEP_SUMMARY"
+            cat /tmp/checkov-output.txt >> "$GITHUB_STEP_SUMMARY" || echo "checkov did not run or did not generate an output file." >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
 
